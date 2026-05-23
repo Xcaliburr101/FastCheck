@@ -166,24 +166,58 @@ if ($MemorySticks.Count -gt 0) {
 
 # --- Display Adapters ---
 Show-Header "Display Adapters"
+
 $gpus = Get-CimOrWmiInstance -ClassName Win32_VideoController |
     Where-Object {
         $name = $_.Name -replace '\s+', ' '
         $name -match '(?i)(AMD|Radeon|Mesa|Intel|GeForce|RTX|NVIDIA|Quadro|Titan|GTX|GT|MX|Arc|Iris|UHD|HD Graphics|Radeon|RX|Vega|Navi|RDNA)' -and
         $name -notmatch '(?i)(Microsoft Basic|Standard|Generic|Virtual|Remote|Software|WDDM)'
     }
+$HasNvidia = $gpus | Where-Object { $_.Name -like "*NVIDIA*" -or $_.Caption -like "*NVIDIA*" }
+if ($HasNvidia) {
+    # 2. Controleer of nvidia-smi al beschikbaar is 
+    $SmiPath = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
 
-foreach ($gpu in $gpus) {
-    $vramGB = if ($gpu.AdapterRAM) { [math]::Round($gpu.AdapterRAM / 1GB, 2) } else { 0 }
-    $resolution = ""
-    if ($gpu.CurrentHorizontalResolution -gt 0 -and $gpu.CurrentVerticalResolution -gt 0) {
-        $resolution = "$($gpu.CurrentHorizontalResolution) x $($gpu.CurrentVerticalResolution)"
+    # Als het commando niet direct in de PATH staat, zoek in de standaard DriverStore
+    if (-not $SmiPath) {
+        $DefaultStorePath = Get-ChildItem -Path "C:\Windows\System32\DriverStore\FileRepository" -Filter "nvidia-smi.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($DefaultStorePath) {
+            # Voeg tijdelijk toe aan het huidige PowerShell-pad
+            $env:Path += ";$($DefaultStorePath.DirectoryName)"
+            $SmiPath = $true
+        }
     }
-    
-    Show-Row "- Name" "$($gpu.Name)" $ColorValue
-    Show-Row "  DriverVersion" "$($gpu.DriverVersion)" $ColorAccent
-    Show-Row "  Resolution" "$resolution" $ColorAccent
-    Show-Row "  VRAM" "$vramGB GB" $ColorAccent
+
+    #Automatische installatie zonder user input
+    if (-not $SmiPath -and (Test-Connection -TargetName www.google.com -Count 1 -Quiet)) {
+        Write-Host "nvidia-smi not found, installing Control Panel" -ForegroundColor Yellow
+        winget install "NVIDIA Control Panel" --id 9NF8H0H7WMLT -s msstore --accept-package-agreements --accept-source-agreements
+
+        Start-Sleep -Seconds 5
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+	else {
+		Write-Host "Cannot install, no internet connection"
+		
+	# if installed
+    $GpuTable = nvidia-smi --query-gpu=name,temperature.gpu,memory.total --format=csv | ConvertFrom-Csv | Select-Object @{N='Name';E={$_.name}}, @{N='Temp';E={$_.'temperature.gpu'}}, @{N='Memory';E={$_.'memory.total [MiB]'}}
+	$GpuTable | Format-List
+
+}
+else {
+
+	foreach ($gpu in $gpus) {
+		$vramGB = if ($gpu.AdapterRAM) { [math]::Round($gpu.AdapterRAM / 1GB, 2) } else { 0 }
+		$resolution = ""
+		if ($gpu.CurrentHorizontalResolution -gt 0 -and $gpu.CurrentVerticalResolution -gt 0) {
+			$resolution = "$($gpu.CurrentHorizontalResolution) x $($gpu.CurrentVerticalResolution)"
+		}
+		
+		Show-Row "- Name" "$($gpu.Name)" $ColorValue
+		Show-Row "  DriverVersion" "$($gpu.DriverVersion)" $ColorAccent
+		Show-Row "  Resolution" "$resolution" $ColorAccent
+		Show-Row "  VRAM" "$vramGB GB" $ColorAccent
+		}
 }
 
 # --- Screen ---
