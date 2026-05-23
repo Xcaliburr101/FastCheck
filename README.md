@@ -1,81 +1,68 @@
-![1000003948](https://github.com/user-attachments/assets/555c3439-58d6-4029-8776-4fbb5efca37c)
+# FastCheck
 
----
+**FastCheck** is a Windows PowerShell script that prints a structured hardware and system report to the console. It is aimed at anyone who wants a quick read on device identity, key components, storage headroom, battery health (on laptops), and whether Windows reports any misconfigured or failing plug-and-play devices.
 
-# LaptopPreviz
+## Compatiblity
 
-## Description
+This script is aimed at **Windows Powershell** not to be confused with **Powershell**. This is because a newly installed laptop can immidiatly run this script. Windows powershell is shipped with every windows installation and is currently on version **5.1**. This is the older and less sophisticated version of **Powershell 7** which is not installed by default. It will work just fine if you have powershell 7 installed, but for compatibility reasons this script is made for Windows powershell 5.1.
 
-This PowerShell script is designed to gather and display comprehensive information about a Windows system. It retrieves details about hardware components, system configuration, connected devices, and potential system issues. This tool is useful for system diagnostics, inventory management, or simply understanding your computer's specifications.
 
-## Features
+## How to run
 
-* **System Information:**
-  * System Model
-  * Serial Number
-  * Secure Boot Status
+From the repository folder:
 
-* **Hardware Information:**
-  * Processor Name and Speed
-  * Total RAM
-  * Screen Size (in inches)
-  * Network Link Speed (for active WiFi and Ethernet connections)
+```powershell
+.\FastCheck.ps1
+```
+or 
+Run the precompiled binary from the releases: ```FastCheck.exe``` 
 
-* **Audio Devices:**
-  * Detected Speakers
-  * Microphone Detection Status and Name
+To run with full privileges (right-click EXE, **Run as administrator**, then execute the same command).
 
-* **Storage Devices:**
-  * Detailed information for each fixed disk drive:
-    * Device Name
-    * Model
-    * Drive Type (HDD, SSD, NVMe)
-    * Size
-    * Interface Type
+## Normal run versus run as administrator
 
-* **Webcam Check:**
-  * Detected Webcam Device Name
+### Normal run (fastest)
 
-* **Problem Detection:**
-  * Identifies and lists devices with driver issues (excluding disabled devices), providing:
-    * Device Name
-    * Error Code
-    * Error Description
+Without elevation, the script avoids operations that need administrator rights. 
+Sections that depend on elevation show a short note that you must run as admin to check them (for example **Secure Boot** and **BitLocker**).
 
-  * Opens the "Printers & scanners"
+Use this mode when you want the quickest pass with minimal friction and no UAC prompt.
 
-* **BIOS Reboot (Conditional):**
-  * If Secure Boot is disabled and the script is run with Administrator rights, it offers to reboot directly into the BIOS/UEFI settings.
+### Run as administrator (most comprehensive)
 
-### Prerequisites
+With elevation, the script can:
 
-* **Operating System:** Windows (This script is designed for Windows and utilizes Windows-specific tools and APIs).
-* **PowerShell:** Ensure you have PowerShell installed. It is typically pre-installed on modern Windows systems.
-* **Administrator Rights (Optional but Recommended):**  While the script will run without administrator privileges, some features (like Secure Boot and TPM status, Device Manager access, and BIOS reboot) require administrator rights to function correctly. Running the script as an administrator will provide the most complete information.
+- Report **Secure Boot** status via `Confirm-SecureBootUEFI`.
+- Inspect **BitLocker** on the `C:` volume with `Get-BitLockerVolume`.
+- Inspect SSD health
 
-1. **Run the Script:**
-    * In an *elevated* terminal(ctrl+shift click), type the following command and press Enter:
 
-        ```powershell
-        powershell.exe -ExecutionPolicy Bypass -File "D:\Tools\1CheckLaptop.ps1"
-        ```
+**Important:** If BitLocker is not fully decrypted on `C:`, the script attempts to **disable BitLocker** on that volume (`Disable-BitLocker`). If you rely on full-disk encryption, review that behavior before running elevated, or run the normal (non-admin) mode if you only want a read-only style report.
 
-* Or use / modify the shortcut in the repo
+## What the report covers (summary)
 
----
+| Area | Typical content |
+|------|-----------------|
+| System and OS | Manufacturer, model, Windows caption and build, BIOS serial |
+| Licensing | Product key from firmware OA3 or registry fallback |
+| CPU / BIOS | Processor name, core counts, BIOS identification string |
+| CPU temperature | Highest reported thermal zone temperature (or not reported) |
+| Secure Boot / BitLocker | Only fully populated when elevated (BitLocker may trigger decryption on `C:`) |
+| Graphics | Physical GPUs matching common vendor patterns; driver version, resolution, reported VRAM |
+| Display | Approximate panel size from WMI monitor data when reported |
+| Memory | Per-DIMM capacity, speed, slot, part number |
+| External management | Autopilot tenant/enrollment lock indicators from registry when present |
+| Storage | Local SSD inventory, health/operational status, and allocation usage |
+| Storage reliability (admin) | SSD reliability counters (temperature, power-on hours, write errors, wear) when supported |
+| Battery | Charge level; health percentage from WMI or `powercfg /batteryreport` XML if WMI is insufficient |
+| Battery voltage | Current vs design voltage check with tolerance-based warning |
+| Network test | Basic connectivity probe and roundtrip time to `www.google.com` |
+| Device health | PnP entities with configuration error codes (with short descriptions for common codes) |
+| Vendor software check | HP software detection on non-HP systems |
+| Software health | App package status, pending winget upgrades, pending Windows security/driver updates, crash dump count |
 
-## Troubleshooting and Notes
+## Limitations
 
-* **Administrator Rights:** Some features, particularly those related to system security settings (Secure Boot, TPM), require administrator rights. Run PowerShell as Administrator to access all features.
-
-* **PowerShell Execution Policy:** If you encounter errors related to script execution, ensure that your PowerShell execution policy allows running local scripts. While the script attempts to bypass the policy for the current process, you may need to adjust it more broadly if you face issues. You can check your current execution policy with `Get-ExecutionPolicy -List`.
-
-* **External Websites & BIOS Reboot:** The script interacts with external websites (Google Search for SmartHDD) and offers to reboot your system into BIOS. Exercise caution and review these actions before proceeding, especially when prompted to reboot into BIOS as it will restart your computer.
-
-* **Output Colors:** The script uses color formatting in PowerShell for better readability. These colors might not be visible in all terminal environments or if PowerShell is configured to not display colors.
-
-* **Error Handling:** The script includes `try-catch` blocks to handle potential errors gracefully and provide informative messages. If you encounter errors, review the error messages in the PowerShell console for clues.
-
-* **Internet Connection (Optional):** An internet connection is only required if you choose to perform the SmartHDD.com Google searches. The core system information gathering functions do not require internet access.
-
----
+- This is a **snapshot** tool: it reflects what Windows reports at run time, not a full stress test or long-term reliability study.
+- Some values (GPU VRAM, monitor size, battery health) can be missing or approximate depending on drivers and firmware.
+- Elevated runs have side effects on BitLocker
