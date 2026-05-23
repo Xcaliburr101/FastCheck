@@ -1,68 +1,102 @@
 # FastCheck
 
-**FastCheck** is a Windows PowerShell script that prints a structured hardware and system report to the console. It is aimed at anyone who wants a quick read on device identity, key components, storage headroom, battery health (on laptops), and whether Windows reports any misconfigured or failing plug-and-play devices.
+**FastCheck** is a Windows PowerShell 5.1 WPF diagnostic dashboard. It streams hardware and system health results into section cards as each check finishes, so you are not waiting for the entire run before seeing data.
 
-## Compatiblity
+Diagnostic logic lives in [`FastCheck.Core.ps1`](FastCheck.Core.ps1). The GUI is [`FastCheck.UI.ps1`](FastCheck.UI.ps1). [`FastCheck.ps1`](FastCheck.ps1) is the STA entry point.
 
-This script is aimed at **Windows Powershell** not to be confused with **Powershell**. This is because a newly installed laptop can immidiatly run this script. Windows powershell is shipped with every windows installation and is currently on version **5.1**. This is the older and less sophisticated version of **Powershell 7** which is not installed by default. It will work just fine if you have powershell 7 installed, but for compatibility reasons this script is made for Windows powershell 5.1.
+## Compatibility
 
+Target runtime is **Windows PowerShell 5.1** with the **.NET Framework** built into Windows (`PresentationFramework`). No .NET 6+ install is required.
 
 ## How to run
-
-From the repository folder:
 
 ```powershell
 .\FastCheck.ps1
 ```
-or 
-Run the precompiled binary from the releases: ```FastCheck.exe``` 
 
-To run with full privileges (right-click EXE, **Run as administrator**, then execute the same command).
+Or explicitly with Windows PowerShell 5.1 (recommended from VS Code / Cursor terminals):
 
-## Normal run versus run as administrator
+```powershell
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -STA -NoProfile -ExecutionPolicy Bypass -File .\FastCheck.ps1
+```
 
-### Normal run (fastest)
+The launcher automatically restarts in **Windows PowerShell 5.1 STA** when needed. If you previously saw exit code **5** (`0x00000005`), that was the editor host being launched instead of `powershell.exe` — this is fixed in the current launcher.
 
-Without elevation, the script avoids operations that need administrator rights. 
-Sections that depend on elevation show a short note that you must run as admin to check them (for example **Secure Boot** and **BitLocker**).
+For BitLocker, Secure Boot, and SSD SMART metrics, run PowerShell or the built EXE **as administrator**.
 
-Use this mode when you want the quickest pass with minimal friction and no UAC prompt.
+## Scan modes
 
-### Run as administrator (most comprehensive)
+| Mode | What it does | Typical duration |
+|------|----------------|------------------|
+| **Quick Scan** | All hardware/OS checks; Appx + crash dumps only for software (skips winget and Windows Update search) | Often under 15 seconds |
+| **Full Scan** | Same as Quick, plus winget (25s timeout) and Windows Update pending search (45s timeout) in parallel | Often 30–90 seconds |
 
-With elevation, the script can:
+Slow operations never block the UI thread. Results appear as **section cards** on the left; a **live log** on the right shows progress, timeouts, and sub-steps (for example `Software: starting winget...`).
 
-- Report **Secure Boot** status via `Confirm-SecureBootUEFI`.
-- Inspect **BitLocker** on the `C:` volume with `Get-BitLockerVolume`.
-- Inspect SSD health
+## Interface
 
+- **Section cards** — two-column label/value grid per check, color-coded severity (OK / Warning / Error)
+- **Live log** — Consolas stream with timestamps
+- **Progress bar** — advances per logical section (15 steps)
+- **Cancel** — stops remaining sections; cards already completed stay visible
+- **Double-click a card** — opens a detail window (separate thread) with full text
 
-**Important:** If BitLocker is not fully decrypted on `C:`, the script attempts to **disable BitLocker** on that volume (`Disable-BitLocker`). If you rely on full-disk encryption, review that behavior before running elevated, or run the normal (non-admin) mode if you only want a read-only style report.
+### Design
 
-## What the report covers (summary)
+Slate dark theme (`#0F172A` background, `#1E293B` cards, `#38BDF8` accents). Default window size 1280×800.
 
-| Area | Typical content |
-|------|-----------------|
-| System and OS | Manufacturer, model, Windows caption and build, BIOS serial |
-| Licensing | Product key from firmware OA3 or registry fallback |
-| CPU / BIOS | Processor name, core counts, BIOS identification string |
-| CPU temperature | Highest reported thermal zone temperature (or not reported) |
-| Secure Boot / BitLocker | Only fully populated when elevated (BitLocker may trigger decryption on `C:`) |
-| Graphics | Physical GPUs matching common vendor patterns; driver version, resolution, reported VRAM |
-| Display | Approximate panel size from WMI monitor data when reported |
-| Memory | Per-DIMM capacity, speed, slot, part number |
-| External management | Autopilot tenant/enrollment lock indicators from registry when present |
-| Storage | Local SSD inventory, health/operational status, and allocation usage |
-| Storage reliability (admin) | SSD reliability counters (temperature, power-on hours, write errors, wear) when supported |
-| Battery | Charge level; health percentage from WMI or `powercfg /batteryreport` XML if WMI is insufficient |
-| Battery voltage | Current vs design voltage check with tolerance-based warning |
-| Network test | Basic connectivity probe and roundtrip time to `www.google.com` |
-| Device health | PnP entities with configuration error codes (with short descriptions for common codes) |
-| Vendor software check | HP software detection on non-HP systems |
-| Software health | App package status, pending winget upgrades, pending Windows security/driver updates, crash dump count |
+## Administrator vs normal
+
+| Feature | Normal | Admin |
+|---------|--------|-------|
+| System, CPU, memory, GPU, network, etc. | Yes | Yes |
+| Secure Boot | Admin required note | Full status |
+| BitLocker | Admin required note | Full status + confirm before decrypt |
+| SSD reliability counters | Not shown | When driver supports SMART |
+
+**BitLocker:** If `C:` is encrypted, a **Yes/No** dialog appears before `Disable-BitLocker` runs. Choose **No** to report only.
+
+## What is checked
+
+| Area | Content |
+|------|---------|
+| System & OS | Manufacturer, model, Windows build, license key |
+| CPU / BIOS | Cores, temperature (when reported), BIOS serial |
+| Secure Boot / BitLocker | Admin only |
+| Graphics / display | GPU filter, monitor size |
+| Memory | Per-DIMM speed, slot, throttle warning |
+| Storage | SSD health, allocation, SMART (admin) |
+| Battery | Health, voltage vs design (laptops) |
+| Network | Ping to `www.google.com` |
+| Device Manager | PnP error codes |
+| HP bloatware | On non-HP systems |
+| Software | Appx, winget (Full), Windows Update (Full), crash dumps |
+
+## Project layout
+
+| File | Role |
+|------|------|
+| `FastCheck.ps1` | STA launcher |
+| `FastCheck.Core.ps1` | Diagnostics + streaming orchestrator |
+| `FastCheck.UI.ps1` | WPF dashboard |
+| `Build-FastCheckExe.ps1` | Builds `Fastcheck.exe` via ps2exe |
+
+## Building an executable
+
+```powershell
+.\Build-FastCheckExe.ps1
+```
+
+Ship **`Fastcheck.exe`** together with **`FastCheck.Core.ps1`** in the same folder (the background runspace loads the core script from disk).
+
+## Architecture notes
+
+- UI thread owns WPF; diagnostics run in an **STA runspace** with `UseNewThread`
+- Completed sections enqueue to a **synchronized queue**; a UI `DispatcherTimer` renders cards on the host thread
+- Software health uses **job timeouts** so winget/WU cannot hang the app indefinitely
 
 ## Limitations
 
-- This is a **snapshot** tool: it reflects what Windows reports at run time, not a full stress test or long-term reliability study.
-- Some values (GPU VRAM, monitor size, battery health) can be missing or approximate depending on drivers and firmware.
-- Elevated runs have side effects on BitLocker
+- Snapshot only — values reflect what Windows reports at run time
+- Full Scan may show timeout rows if winget or Windows Update is slow or offline
+- Elevated runs may change BitLocker only after you confirm the dialog
