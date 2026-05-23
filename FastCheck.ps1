@@ -22,7 +22,8 @@ function Show-Row ([string]$Label, $Value, [string]$PassColor = "Gray") {
     if ([string]::IsNullOrWhiteSpace($Value)) {
         $DisplayValue = "N/A"
         $DisplayColor = "Gray"
-    } else {
+    }
+    else {
         $DisplayValue = $Value
         $DisplayColor = $PassColor
     }
@@ -110,7 +111,8 @@ Show-Row "Cores" "$($CPU.NumberOfCores) (Logical: $($CPU.NumberOfLogicalProcesso
 if ($maxTemp -gt 0) {
     $TempColor = if ($maxTemp -gt 85) { "Red" } elseif ($maxTemp -gt 70) { "Yellow" } else { "Green" }
     Show-Row "Temperature" "$maxTemp °C" $TempColor
-} else {
+}
+else {
     Show-Row "Temperature" "Not Reported" $ColorAccent
 }
 # --- BIOS ---
@@ -125,7 +127,7 @@ $MemorySticks = @(Get-CimOrWmiInstance -ClassName Win32_PhysicalMemory -Property
 
 if ($MemorySticks.Count -gt 0) {
     $MemoryTypeMap = @{ 
-        "0"  = "Unknown/Onboard"; "20" = "DDR"; "21" = "DDR2"; "24" = "DDR3"; 
+        "0" = "Unknown/Onboard"; "20" = "DDR"; "21" = "DDR2"; "24" = "DDR3"; 
         "26" = "DDR4"; "30" = "DDR5"; "34" = "DDR5" 
     }
 
@@ -160,65 +162,105 @@ if ($MemorySticks.Count -gt 0) {
             Show-Row "  Part" "$($Stick.PartNumber.Trim())" $ColorAccent
         }
     }
-} else {
+}
+else {
     Show-Row "Status" "[!!] No physical memory data returned" "Yellow"
 }
 
 # --- Display Adapters ---
 Show-Header "Display Adapters"
 
-$gpus = Get-CimOrWmiInstance -ClassName Win32_VideoController |
-    Where-Object {
-        $name = $_.Name -replace '\s+', ' '
-        $name -match '(?i)(AMD|Radeon|Mesa|Intel|GeForce|RTX|NVIDIA|Quadro|Titan|GTX|GT|MX|Arc|Iris|UHD|HD Graphics|Radeon|RX|Vega|Navi|RDNA)' -and
-        $name -notmatch '(?i)(Microsoft Basic|Standard|Generic|Virtual|Remote|Software|WDDM)'
+# 1. Define fallback logic as a ScriptBlock to avoid repeating code
+$OutputFallbackGpuInfo = {
+    param([array]$GpuList)
+    foreach ($gpu in $GpuList) {
+        $vramGB = if ($gpu.AdapterRAM) { [math]::Round($gpu.AdapterRAM / 1GB, 2) } else { 0 }
+        $resolution = ""
+        if ($gpu.CurrentHorizontalResolution -gt 0 -and $gpu.CurrentVerticalResolution -gt 0) {
+            $resolution = "$($gpu.CurrentHorizontalResolution) x $($gpu.CurrentVerticalResolution)"
+        }
+        
+        Show-Row "- Name" "$($gpu.Name)" $ColorValue
+        Show-Row "  DriverVersion" "$($gpu.DriverVersion)" $ColorAccent
+        Show-Row "  Resolution" "$resolution" $ColorAccent
+        Show-Row "  VRAM (CIM)" "$vramGB GB" $ColorAccent
     }
-$HasNvidia = $gpus | Where-Object { $_.Name -like "*NVIDIA*" -or $_.Caption -like "*NVIDIA*" }
-if ($HasNvidia) {
-    # 2. Controleer of nvidia-smi al beschikbaar is 
+}
+
+$gpus = Get-CimOrWmiInstance -ClassName Win32_VideoController | Where-Object {
+    $name = $_.Name -replace '\s+', ' '
+    $name -match '(?i)(AMD|Radeon|Mesa|Intel|GeForce|RTX|NVIDIA|Quadro|Titan|GTX|GT|MX|Arc|Iris|UHD|HD Graphics|Radeon|RX|Vega|Navi|RDNA)' -and
+    $name -notmatch '(?i)(Microsoft Basic|Standard|Generic|Virtual|Remote|Software|WDDM)'
+}
+
+# Separate Nvidia GPUs from others (handles systems with both Intel iGPU and Nvidia dGPU)
+$NvidiaGpus = $gpus | Where-Object { $_.Name -match "(?i)NVIDIA" -or $_.Caption -match "(?i)NVIDIA" }
+$OtherGpus  = $gpus | Where-Object { $_.Name -notmatch "(?i)NVIDIA" -and $_.Caption -notmatch "(?i)NVIDIA" }
+
+if ($NvidiaGpus) {
+    # 2. Check if nvidia-smi is already available
     $SmiPath = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
 
-    # Als het commando niet direct in de PATH staat, zoek in de standaard DriverStore
+    # If not in PATH, search the standard DriverStore
     if (-not $SmiPath) {
         $DefaultStorePath = Get-ChildItem -Path "C:\Windows\System32\DriverStore\FileRepository" -Filter "nvidia-smi.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($DefaultStorePath) {
-            # Voeg tijdelijk toe aan het huidige PowerShell-pad
             $env:Path += ";$($DefaultStorePath.DirectoryName)"
-            $SmiPath = $true
+            $SmiPath = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
         }
     }
 
-    #Automatische installatie zonder user input
-    if (-not $SmiPath -and (Test-Connection -TargetName www.google.com -Count 1 -Quiet)) {
-        Write-Host "nvidia-smi not found, installing Control Panel" -ForegroundColor Yellow
-        winget install "NVIDIA Control Panel" --id 9NF8H0H7WMLT -s msstore --accept-package-agreements --accept-source-agreements
+    # 3. Check internet and install if missing
+    if (-not $SmiPath) {
+        Show-Row "Status" "nvidia-smi not found. Checking connection..." "Yellow"
+        
+        # Quick ping to standard DNS to verify WAN connectivity
+        $HasInternet = Test-Connection -ComputerName 8.8.8.8 -Count 1 -Quiet -ErrorAction SilentlyContinue
 
-        Start-Sleep -Seconds 5
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        if ($HasInternet) {
+            Show-Row "Status" "Internet found. Installing Control Panel via winget..." "Yellow"
+            
+            # Execute winget and capture exit code
+            winget install "NVIDIA Control Panel" --id 9NF8H0H7WMLT -s msstore --accept-package-agreements --accept-source-agreements
+            
+            if ($LASTEXITCODE -eq 0) {
+                Start-Sleep -Seconds 5
+                # Refresh session PATH variables
+                $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+                $SmiPath = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+            } else {
+                Show-Row "Error" "Winget installation failed (Exit: $LASTEXITCODE)" "Red"
+            }
+        } else {
+            Show-Row "Error" "No internet connection. Skipping Winget install." "Red"
+        }
     }
-	else {
-		Write-Host "Cannot install, no internet connection"
-		
-	# if installed
-    $GpuTable = nvidia-smi --query-gpu=name,temperature.gpu,memory.total --format=csv | ConvertFrom-Csv | Select-Object @{N='Name';E={$_.name}}, @{N='Temp';E={$_.'temperature.gpu'}}, @{N='Memory';E={$_.'memory.total [MiB]'}}
-	$GpuTable | Format-List
 
+    # 4. Display Info: Accurate SMI if available, Fallback CIM if failed
+    if ($SmiPath) {
+        try {
+            $GpuTable = nvidia-smi --query-gpu=name,temperature.gpu,memory.total --format=csv | ConvertFrom-Csv
+            
+            foreach ($nv in $GpuTable) {
+                Show-Row "- Name" "$($nv.name)" $ColorValue
+                Show-Row "  Temp" "$($nv.'temperature.gpu') °C" $ColorAccent
+                Show-Row "  VRAM (SMI)" "$($nv.'memory.total [MiB]')" $ColorAccent
+            }
+        } catch {
+            Show-Row "Error" "nvidia-smi parsing failed. Using CIM fallback." "Red"
+            & $OutputFallbackGpuInfo -GpuList $NvidiaGpus
+        }
+    } else {
+        # Fallback executed if Winget failed or no internet was available
+        & $OutputFallbackGpuInfo -GpuList $NvidiaGpus
+    }
 }
-else {
 
-	foreach ($gpu in $gpus) {
-		$vramGB = if ($gpu.AdapterRAM) { [math]::Round($gpu.AdapterRAM / 1GB, 2) } else { 0 }
-		$resolution = ""
-		if ($gpu.CurrentHorizontalResolution -gt 0 -and $gpu.CurrentVerticalResolution -gt 0) {
-			$resolution = "$($gpu.CurrentHorizontalResolution) x $($gpu.CurrentVerticalResolution)"
-		}
-		
-		Show-Row "- Name" "$($gpu.Name)" $ColorValue
-		Show-Row "  DriverVersion" "$($gpu.DriverVersion)" $ColorAccent
-		Show-Row "  Resolution" "$resolution" $ColorAccent
-		Show-Row "  VRAM" "$vramGB GB" $ColorAccent
-		}
+# 5. Always output any non-Nvidia GPUs (e.g., Intel Integrated) via CIM
+if ($OtherGpus) {
+    & $OutputFallbackGpuInfo -GpuList $OtherGpus
 }
+
 
 # --- Screen ---
 Show-Header "Screen"
@@ -232,7 +274,8 @@ if ($monitors) {
             Show-Row "Monitor" "$widthCm x $heightCm cm ($diagonalInches inches)" $ColorValue
         }
     }
-} else {
+}
+else {
     Show-Row "Monitor" "Not Detected" "Red"
 }
 
@@ -253,7 +296,8 @@ if (Test-Path $mdmKey) {
 if (![string]::IsNullOrWhiteSpace($tenantDomain)) {
     Show-Row "Autopilot" "[!!] ENROLLED to: $($tenantDomain.ToUpper())" "Red"
     if ($isLocked -eq 1) { Show-Row "Security" "[!!] Enrollment is LOCKED." "Yellow" }
-} else {
+}
+else {
     Show-Row "Autopilot" "[OK] No Profile Detected" "Green"
 }
 
@@ -264,16 +308,20 @@ if ($isAdmin) {
     if ($blv) {
         if ($blv.VolumeStatus -eq "FullyDecrypted") {
             Show-Row "Status" "[OK] C: is fully decrypted" "Green"
-        } elseif ($blv.VolumeStatus -eq "DecryptionInProgress") {
+        }
+        elseif ($blv.VolumeStatus -eq "DecryptionInProgress") {
             Show-Row "Status" "[!!] Decryption in progress ($($blv.EncryptionPercentage)%)" "Yellow"
-        } else {
+        }
+        else {
             Show-Row "Status" "[!!] Encryption detected. Initiating decryption..." "Red"
             Disable-BitLocker -MountPoint "C:" -ErrorAction SilentlyContinue | Out-Null
         }
-    } else {
-         Show-Row "Status" "Not Enabled / No Volume Found" "Green"
     }
-} else {
+    else {
+        Show-Row "Status" "Not Enabled / No Volume Found" "Green"
+    }
+}
+else {
     Show-Row "Status" "Admin rights required for BitLocker check" $ColorAccent
 }
 
@@ -283,7 +331,8 @@ $Disks = Get-PhysicalDisk | Where-Object MediaType -eq 'SSD'
 
 if (-not $Disks) {
     Show-Row "Status" "No SSDs found on this system." "Yellow"
-} else {
+}
+else {
     foreach ($Disk in $Disks) {
         $SizeGB = [math]::Round($Disk.Size / 1GB, 2)
         $AllocatedGB = [math]::Round($Disk.AllocatedSize / 1GB, 2)
@@ -303,7 +352,8 @@ if (-not $Disks) {
                 $WriteErrors = if ($null -ne $Counter.WriteErrorsTotal) { $Counter.WriteErrorsTotal } else { "0" }
                 $Wear = if ($null -ne $Counter.Wear) { "$($Counter.Wear)%" } else { "N/A" }
                 Show-Row "  Metrics" "Temp: $Temp | Power On Hours: $PowerOnHours | Write Errors: $WriteErrors | Wear: $Wear" $ColorAccent
-            } else {
+            }
+            else {
                 Show-Row "  Metrics" "SMART/Reliability data not supported by driver." $ColorAccent
             }
         }
@@ -334,7 +384,8 @@ if ($Battery) {
                 $WMIHealthPct = [Math]::Round(($XMLBattery.FullChargeCapacity / $XMLBattery.DesignCapacity) * 100, 0)
                 $Source = "powercfg Fallback"
             }
-        } catch { }
+        }
+        catch { }
     }
     
     Show-Row "- ID" "$($Battery.DeviceID)" $ColorValue
@@ -343,7 +394,8 @@ if ($Battery) {
     
     if ($WMIHealthPct -gt 0) {
         Show-Row "  Health" "$WMIHealthPct% ($Source)" "Yellow"
-    } else {
+    }
+    else {
         Show-Row "  Health" "Health data unavailable" "Red"
     }
 
@@ -357,11 +409,13 @@ if ($Battery) {
 
         if ($difference -gt $tolerance) {
             Show-Row "  Voltage" "[!!] Deviation too high: $difference V (Design: $designVoltage V, Current: $voltage V)" "Red"
-        } else {
+        }
+        else {
             Show-Row "  Voltage" "$voltage V (Design: $designVoltage V)" "White"
         }
     }
-} else {
+}
+else {
     Show-Row "Status" "No battery detected." "Red"
 }
 
@@ -371,10 +425,12 @@ try {
     $ping = (New-Object Net.NetworkInformation.Ping).Send("www.google.com", 2000)
     if ($ping.Status -eq "Success") {
         Show-Row "Connection" "Online ($($ping.RoundtripTime)ms)" "White"
-    } else {
+    }
+    else {
         Show-Row "Connection" "[!!] No Reply" "Yellow"
     }
-} catch { Show-Row "Connection" "[!!] Error" "Red" }
+}
+catch { Show-Row "Connection" "[!!] Error" "Red" }
 
 # --- Problems Check ---
 function Get-ErrorDescription {
@@ -404,7 +460,8 @@ if ($problematicDevices) {
         Show-Row "  Error Code" "$($_.ConfigManagerErrorCode) - $(Get-ErrorDescription $_.ConfigManagerErrorCode)" "Yellow"
         Write-Host " -------------------------------------------------" -ForegroundColor DarkGray
     }
-} else {
+}
+else {
     Show-Row "Status" "All devices are functioning properly" "Green"
 }
 
@@ -421,19 +478,21 @@ if ($manufacturer -notmatch "\bHP\b|Hewlett-Packard|Hewlett Packard") {
     )
 
     $hpSoftware = Get-ItemProperty -Path $registryPaths -ErrorAction SilentlyContinue |
-        Where-Object {
-            ($_.DisplayName -match "\bHP\b|Hewlett-Packard|Hewlett Packard") -or
-            ($_.Publisher -match "\bHP\b|Hewlett-Packard|Hewlett Packard")
-        } | Select-Object -ExpandProperty DisplayName -Unique | Where-Object { ![string]::IsNullOrWhiteSpace($_) }
+    Where-Object {
+        ($_.DisplayName -match "\bHP\b|Hewlett-Packard|Hewlett Packard") -or
+        ($_.Publisher -match "\bHP\b|Hewlett-Packard|Hewlett Packard")
+    } | Select-Object -ExpandProperty DisplayName -Unique | Where-Object { ![string]::IsNullOrWhiteSpace($_) }
 
     if ($hpSoftware) {
         Show-Row "Status" "[!!] HP software found on a non-HP system!" "Red"
         foreach ($app in $hpSoftware) { Show-Row "  Found" $app "Yellow" }
-    } else {
+    }
+    else {
         Show-Row "Status" "No HP software found on this device." "White"
     }
-} else {
-     Show-Row "Status" "System is an HP. Skipping HP bloatware check." "Green"
+}
+else {
+    Show-Row "Status" "System is an HP. Skipping HP bloatware check." "Green"
 }
 
 
@@ -454,7 +513,8 @@ try {
     Import-Module Appx -ErrorAction Stop
     $apps = @(Get-AppxPackage -ErrorAction Stop)
     $appxAvailable = $true
-} catch {
+}
+catch {
     # Appx unavailable on Server Core, some OEM SKUs, or restricted shells
 }
 
@@ -478,7 +538,8 @@ try {
         $cats = $u.Categories | Select-Object -ExpandProperty Name
         if ($cats -match "Security") { $sec++ } elseif ($cats -match "Driver") { $drv++ }
     }
-} catch {}
+}
+catch {}
 
 $dumps = Get-DumpCount
 Write-Progress -Activity "Software Check" -Completed
@@ -486,11 +547,11 @@ Write-Progress -Activity "Software Check" -Completed
 $Report = New-Object System.Collections.Generic.List[PSObject]
 $appxStatus = if (-not $appxAvailable) { "[--]" } elseif ($badApps -gt 0) { "[!!]" } else { "[OK]" }
 $appxDetails = if (-not $appxAvailable) { "Appx not supported on this platform" } elseif ($badApps -gt 0) { "$badApps non-ok" } else { "All Healthy" }
-$Report.Add([PSCustomObject]@{ Component="Windows Apps"; Status=$appxStatus; Total=$apps.Count; Details=$appxDetails })
-$Report.Add([PSCustomObject]@{ Component="Winget"; Status=$(if($wCount -gt 0){"[!!]"}else{"[OK]"}); Total=$wCount; Details="Upgrades available" })
-$Report.Add([PSCustomObject]@{ Component="Win Security"; Status=$(if($sec -gt 0){"[!!]"}else{"[OK]"}); Total=$sec; Details="Pending patches" })
-$Report.Add([PSCustomObject]@{ Component="Win Drivers"; Status=$(if($drv -gt 0){"[!!]"}else{"[OK]"}); Total=$drv; Details="Pending updates" })
-$Report.Add([PSCustomObject]@{ Component="System Health"; Status=$(if($dumps -gt 0){"[!!]"}else{"[OK]"}); Total=$dumps; Details=$(if($dumps -gt 0){"Crash dumps found!"}else{"No crashes"}) })
+$Report.Add([PSCustomObject]@{ Component = "Windows Apps"; Status = $appxStatus; Total = $apps.Count; Details = $appxDetails })
+$Report.Add([PSCustomObject]@{ Component = "Winget"; Status = $(if ($wCount -gt 0) { "[!!]" }else { "[OK]" }); Total = $wCount; Details = "Upgrades available" })
+$Report.Add([PSCustomObject]@{ Component = "Win Security"; Status = $(if ($sec -gt 0) { "[!!]" }else { "[OK]" }); Total = $sec; Details = "Pending patches" })
+$Report.Add([PSCustomObject]@{ Component = "Win Drivers"; Status = $(if ($drv -gt 0) { "[!!]" }else { "[OK]" }); Total = $drv; Details = "Pending updates" })
+$Report.Add([PSCustomObject]@{ Component = "System Health"; Status = $(if ($dumps -gt 0) { "[!!]" }else { "[OK]" }); Total = $dumps; Details = $(if ($dumps -gt 0) { "Crash dumps found!" }else { "No crashes" }) })
 
 Show-Header "System Software Report"
 $Report | Format-Table -AutoSize
